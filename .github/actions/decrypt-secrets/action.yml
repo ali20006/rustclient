@@ -17,7 +17,7 @@ runs:
       with:
         python-version: '3.11'
 
-    - name: install python deps
+    - name: Install python deps
       shell: bash
       run: |
         python -m pip install --upgrade pip
@@ -26,6 +26,8 @@ runs:
     - name: Decrypt and Mask
       shell: python
       env:
+        ZIP_PASS: ${{ inputs.zip_password }}
+        ZIP_PATH: ${{ inputs.zip_path }}
         PYTHONUTF8: "1"
         PYTHONIOENCODING: "utf-8"
       run: |
@@ -35,21 +37,30 @@ runs:
         import json
         import os
 
-        # Force UTF-8 stdout/stderr so secrets with characters outside
-        # the runner codepage (CJK, emoji, etc.) do not crash this step
-        # on Windows runners (default cp1251) with UnicodeEncodeError
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-        with pyzipper.AESZipFile('${{ inputs.zip_path }}') as zf:
-            zf.setpassword('${{ inputs.zip_password }}'.encode())
-            with zf.open('secrets.json') as f:
-                secrets = json.load(f)
+        zip_path = os.environ.get('ZIP_PATH', 'secrets.zip')
+        zip_pass = os.environ.get('ZIP_PASS', '')
 
-        with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env_file:
-            for key, value in secrets.items():
-                if value:
-                    print(f"::add-mask::{value}")
-                    env_file.write(f"{key}={value}\n")
-        
-        print(f"Successfully masked {len(secrets)} secrets.")
+        if not os.path.exists(zip_path):
+            print(f"::error::File not found: {zip_path}")
+            print("Current directory files:", os.listdir('.'))
+            sys.exit(1)
+
+        try:
+            with pyzipper.AESZipFile(zip_path) as zf:
+                zf.setpassword(zip_pass.encode('utf-8'))
+                with zf.open('secrets.json') as f:
+                    secrets = json.load(f)
+
+            with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env_file:
+                for key, value in secrets.items():
+                    if value:
+                        print(f"::add-mask::{value}")
+                        env_file.write(f"{key}={value}\n")
+            
+            print(f"Successfully masked {len(secrets)} secrets.")
+        except Exception as e:
+            print(f"::error::Failed to decrypt/process secrets: {str(e)}")
+            sys.exit(1)
